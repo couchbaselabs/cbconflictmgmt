@@ -113,34 +113,70 @@ Format of PackedRev:
 
 
 
-##Examples
-### Doc Edits and Conflicts for 3 clusters
+#Examples
+## Single Document Edits and Conflicts for 3 clusters
 
 This example details a single document edited and replicated on 3 different clusters, how the revision trees are updated, conflicts are identified, and interim winners chosen. The **bold revision entries on each node indicate the interim winner.**
 
-(We don't use the full failover ids, but shortened hex ids that are pronounceable.)
+(Note we don't use the full failover ids, in this example, but shortened hex ids that are pronounceable instead)
 
-1. The document is created node deadbeaf (1-0-deadbeef-0)
+### Initial Edit And Replication
+The document is created node deadbeaf (1-0-deadbeef-0) and replicates to cafebabe.
+
 ![](revtreesimages/a.png)
-2. deadbeaf replicates 1-0-deadbeef-1 to cafebabe where edited once (2-0-cafebabe-0).
+
+### Second Node Edits and replicates
+
+cafebabe edits the document and creates revision 2-0-cafebabe-0, then replicates to ba5eba11.
+
 ![](revtreesimages/b.png)
-3. cafebabe replicates 2-0-cafebabe-0 to ba5eba11 where edited once (3-0-ba5eba11-0).
-4. cafebabe edits 2-0-cafebabe-1 again (2-1-cafebabe-0).
+
+### Edit Conflicts
+
+ba5eba11 edits once (3-0-ba5eba11-0).
+
+cafebabe edits again (2-1-cafebabe-0).
+
 ![](revtreesimages/c.png)
-5. Bi-dir replication between cafebabe and ba5eba11 creates new branch/conflict on both (2-1-cafebabe-0 and 3-0-ba5eba11-0).
+
+### Replicating Edit Conflicts
+Bi-dir replication between cafebabe and ba5eba11 creates new branch/conflicts (2-1-cafebabe-0 and 3-0-ba5eba11-0).
+
 ![](revtreesimages/d.png)
-6. version 2-1-cafebabe-0 edited at ba5eba11 which becomes 4-0-ba5eba11-1.
-7. version 2-1-cafebabe-0 edited at cafebabe which becomes 2-2-cafebabe-0.
+
+### More Conflicting Edits
+
+Revision 2-1-cafebabe-0 edited at ba5eba11 which becomes 4-0-ba5eba11-1.
+
+Revision 2-1-cafebabe-0 edited at cafebabe which becomes 2-2-cafebabe-0.
+
 ![](revtreesimages/e.png)
-8. cafebabe replicates 2-2-cafebabe-1 to deadbeef.
-9. ba5eba11 replicates 4-0-ba5eba11-2 to deadbeef.
+
+### Replicating More Conflicts
+
+cafebabe replicates 2-2-cafebabe-0 to deadbeef.
+
+ba5eba11 replicates 4-0-ba5eba11-1 to deadbeef.
+
 ![](revtreesimages/f.png)
-10. 2-2-cafebabe-0 edited at deadbeaf which becomes 5-1-deadbeef-1
-11. 4-0-ba5eba11-0 edited at deadbeaf which becomes 5-1-deadbeef-2
+
+### More Conflicting Edits
+
+Revision 2-2-cafebabe-0 edited at deadbeaf which becomes 5-1-deadbeef-1.
+
+Revision 4-0-ba5eba11-1 edited at deadbeaf which becomes 5-1-deadbeef-2.
+
 ![](revtreesimages/g.png)
-12. All nodes bi-dir replicate, now with conflicts (5-1-deadbeef-2, 5-1-deadbeef-3, 3-0-ba5eba11-1)
-13. 5-1-deadbeef-3 is selected interim winner at all nodes.
+
+###Final Replication
+
+deaadbeef replicates new edits to cafebabe and ba5eba11. All nodes now have all the same conflicts (5-0-deadbeef-1, 5-0-deadbeef-2, 3-0-ba5eba11-0) and revision 5-1-deadbeef-3 is selected interim winner at all nodes.
+
 ![](revtreesimages/h.png)
-14. Detail of full rev trees now on all nodes
+
+###Detail of full rev tree now on all nodes
+
+All nodes will the have the same revision tree with the same histories.
+
 ![](revtreesimages/i.png)
 
