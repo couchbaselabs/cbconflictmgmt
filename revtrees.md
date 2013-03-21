@@ -1,34 +1,81 @@
+Conflict Handling using Rev Trees Functional Specification
+=======================================
 
-Each Rev of document Rev History is made up of the parts in the following table:
+# INTRODUCTION
 
-Rev fields and sizes:
+## Purpose of this Document
+
+This document describes the functionality and high level data structures of revision trees to support conflict management.
+
+## Motivation
+
+With Cross DataCenter Replication (XDCR) linking clusters, it is easy to create conflicting updates for a document by editing a document in more than one cluster at roughly the same time. Currently XDCR will arbitrarily select the same document version on both clusters as the winner and irretrievably discard the loser(s).
+
+Within a cluster, it's also possible that there is a network partition where a client and server node are separated from the rest of the cluster and the node is "failed out" from the cluster. If clients on both sides of the partition edits the same document, there are currently irretrievably lost edits.
+
+With proper conflict management -- which will store all conflicting document versions until resolution -- it will be possible to identify the conflicts and merge the documents with either built-in server features, an external automated agent, or an end user, so no information is lost.
+
+## Scope of this Document
+
+This document will describe the high level algorithms and data structures necessary to implement the core of conflict management. It will not specify implementation details, or required changes in existing code necessary to support the implementation.
+
+
+## Basics of Rev Trees
+
+Each time a document is created, edited or deleted, a revision entry (rev) is added to the document's rev history, or an existing "leaf" entry is updated. Each revision entry is made up of these fields with these sizes:
 
 <table>
 	<tr>
 		<th>Description
 		<td>SeqStart
 		<td>ConsecEdits
-		<td>OrigId
+		<td>OriginId
 		<td>EditId
-		<th>Total
 	<tr>
-		<th>Bytes
-		<td>6
-		<td>2
-		<td>16
-		<td>4
-		<th>28
+		<th>Type
+		<td>48bit uint
+		<td>32bit uint
+		<td>128bit UUID
+		<td>32bit uint
 </table>
 
-SeqStart: The total number of edits on this document since the start of time. Limited to 48 bits.
+**SeqStart**: The total number of edits on this document since the start of time.
 
-ConsecEdits: The total number of consecutive edits made on this document by the same node.
+**ConsecEdits**: The total number of consecutive edits made on this document by the same node.
 
-OriginId: The FailoverId of node that originated the edit(s). FailoverIds can be moved to another node when there is smooth rebalance. Only one node at any time will have a particular FailoverId.
+**OriginId**: The FailoverId of node that originated the edit(s). FailoverIds can be moved to another node when there is smooth rebalance. When the master node crashes or is unavailable, the new master (which might be the same physical node) is given a new FailoverId. Only one node at any time will have a particular FailoverId.
 
-EditId: A value that is unique to all edits -- including all branches/conflicts -- of the same document by a node. When combined with the OriginId, they are globally unique across all edits and conflicts of this document.
+**EditId**: A value that is unique to all edits -- including all branches/conflicts -- of the same document by a node. When combined with the OriginId, as a pair they are globally unique across all edits and conflicts of this document.
 
-When updating a document and the most recent Rev has a different OriginID from the current node, a new Rev is added to the revision history, with a SeqStart that is the sum of the previous Rev SeqStart and ConsecutiveEdits. If consecutive edits by the same node/FailoverId are made to the document, only the consecutive edits is adjusted.
+When updating a document and the most recent Rev has a different OriginID from the current partition master node's FailoverID, a new Rev is added to the revision history, with a SeqStart that is the sum of the previous Rev SeqStart and ConsecEdits, an ConseqEdits of 0, a OriginId that is the current FailoverId, and an EditId that is unique different from any matching OriginId for this document or it's conflicts. If the edit is a consecutive edits by the same node/FailoverId, only the ConsecEdits is increments.
+
+If a document is only ever edited at the same master node, the revision history will not grow, and instead the ConsecEdits will keep incrementing. If the ConsecEdits reaches it's maximum value (2^32), a new rev entry will created and added to the history. Logically the 2 or more consecutive revs with the same OriginId will be considered a single rev entry.
+
+If a document is edited on multiple servers, it's possible for edit conflicts to occur. When an edit conflicts happens, there will be a "branch" in the rev history. The branches can have a common rev in the history, or be completely detached with no common element.
+
+When there is a edit conflict, each server selects an interim "winner", which is decided by:
+
+1. Prefer non-deleted revs to deleted revs.
+2. Prefer rev with the most edits.
+3. Prefer rev with the highest sorting OriginId.
+4. Prefer rev with the highest EditId.
+
+All nodes, if they have the same revisions, will select the same document as the interim winner.
+
+Here is an example of a single rev history tree consisting of 3 branches and therefore 2 conflicts and 1 interim winner:
+
+![](revtreesimages/i.png)
+
+The rev 5-0-deadbeef-2, in **bold**, is the interim winner.
+
+If the last edit in a branch is a "deletion", which means the leaf for that branch specifies a deleted document, that branch is no longer considered to be conflict. To resolve a conflict, an agent or user would add revs to the leafs in the losing branches into the deleted state. The winner can be updated with data from the losing revs as well, if applicable. Once there is no more that one live or non-deleted branch, the conflict is considered to be resolved and is no longer in conflict.
+
+
+## Compact Representation of a Rev Tree.
+
+Here is a proposed binary level format for storing a whole Rev Tree in a packed representation with size for all members.
+
+_It's possible in most circumstances to be much more space efficient by using use variable sized integers in many places, or even to specify the whole tree on-disk structure using something like protocol buffers, which has variable sized int as a built in feature_.
 
 ###PackedRevTree###
 
@@ -37,32 +84,32 @@ The Packed Rev tree contains all the information necessary to construct a full r
 <table>
 	<tr>
 		<th>Description
-		<td>OrigIdDictionary
+		<td>OriginIdDictionary
 		<td>PackedRevHistory1
 		<td>...
 		<td>PackedRevHistoryN
 
 	<tr>
 		<th>Bytes
-		<td>length(OrigIdDictionary)
+		<td>length(OriginIdDictionary)
 		<td>length(PackedRevHistory1)
 		<td>...
 		<td>length(PackedRevHistoryN)
 </table>
 
-###OrigIdDictionary###
+###OriginIdDictionary###
 
-This is a mapping of OrigIds to integers that we use in a PackedRev entry. OrigIdOrdinal in PackedRev is an integer that maps to the Nth OrigId here.
+This is a mapping of OriginIds to integers that we use in a PackedRev entry. OriginIdOrdinal in PackedRev is an integer that maps to the Nth OriginId here.
 
 <table>
 	<tr>
 		<th>Description
-		<td>NumOrigIds
-		<td>OrigIdEntry1…N
+		<td>NumOriginIds
+		<td>OriginIdEntry1…N
 	<tr>
 		<th>Bytes
 		<td>3
-		<td>16 * NumOrigIds
+		<td>16 * NumOriginIds
 </table>
 
 ###PackedRevHistory###
@@ -100,7 +147,7 @@ Format of PackedRev:
 	<tr>
 		<th>Description
 		<td>ConsecEdits
-		<td>OrigIdOrdinal
+		<td>OriginIdOrdinal
 		<td>EditId
 		<th>Total
 	<tr>
@@ -114,9 +161,9 @@ Format of PackedRev:
 
 
 #Examples
-## Single Document Edits and Conflicts for 3 clusters
+## Document Edits and Conflicts w/ 3 clusters
 
-This example details a single document edited and replicated on 3 different clusters, how the revision trees are updated, conflicts are identified, and interim winners chosen. The **bold revision entries on each node indicate the interim winner.**
+This example details a single document edited and replicated on 3 different clusters that are XDCR peers, how the revision trees are updated, conflicts are identified, and interim winners chosen. The **bold revision entries on each node indicate the interim winner.**
 
 (Note we don't use the full failover ids, in this example, but shortened hex ids that are pronounceable instead)
 
