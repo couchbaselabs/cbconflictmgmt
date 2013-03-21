@@ -68,7 +68,7 @@ Here is an example of a single rev history tree consisting of 3 branches and the
 
 The rev 5-0-deadbeef-2, in **bold**, is the interim winner.
 
-If the last edit in a branch is a "deletion", which means the leaf for that branch specifies a deleted document, that branch is no longer considered to be conflict. To resolve a conflict, an agent or user would add revs to the leafs in the losing branches into the deleted state. The winner can be updated with data from the losing revs as well, if applicable. Once there is no more that one live or non-deleted branch, the conflict is considered to be resolved and is no longer in conflict.
+If the last edit in a branch is a "deletion", which means the leaf for that branch specifies a deleted document, that branch is no longer considered to be conflict. To resolve a conflict, an agent or user would add revs to the leafs in the losing branches into the deleted state. The winner can be updated with data from the losing revs as well, if applicable. Once there is no more than one live or non-deleted branch, the conflict is considered to be resolved and is no longer in conflict.
 
 
 ## Compact Representation of a Rev Tree.
