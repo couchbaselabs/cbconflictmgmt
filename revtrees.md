@@ -43,15 +43,15 @@ Each time a document is created, edited or deleted, a revision entry (rev) is ad
 
 **ConsecEdits**: The total number of consecutive edits made on this document by the same node.
 
-**OriginId**: The FailoverId of node that originated the edit(s). FailoverIds can be moved to another node when there is smooth rebalance. When the master node crashes or is unavailable, the new master (which might be the same physical node) is given a new FailoverId. Only one node at any time will have a particular FailoverId.
+**OriginId**: The UUID of partition master that originated the edit(s). OriginIds can be moved to another node when there is smooth rebalance. When the master node crashes or is unavailable, the new master (which might be the same physical node) is given a new id. Only one node at any time will have a particular id. We will likely be reusing the FailoverId which is part of UPR.
 
-**EditId**: A value that is unique to all edits -- including all branches/conflicts -- of the same document by a node. When combined with the OriginId, as a pair they are globally unique across all edits and conflicts of this document.
+**EditId**: A value that when combined with the OriginId and SeqStart, is unique to all branches/conflicts.
 
 When updating a document and the most recent Rev has a different OriginID from the current partition master node's FailoverID, a new Rev is added to the revision history, with a SeqStart that is the sum of the previous Rev SeqStart and ConsecEdits, an ConseqEdits of 0, a OriginId that is the current FailoverId, and an EditId that is unique different from any matching OriginId for this document or it's conflicts. If the edit is a consecutive edits by the same node/FailoverId, only the ConsecEdits is increments.
 
 If a document is only ever edited at the same master node, the revision history will not grow, and instead the ConsecEdits will keep incrementing. If the ConsecEdits reaches it's maximum value (2^32), a new rev entry will created and added to the history. Logically the 2 or more consecutive revs with the same OriginId will be considered a single rev entry.
 
-If a document is edited on multiple servers, it's possible for edit conflicts to occur. When an edit conflicts happens, there will be a "branch" in the rev history. The branches can have a common rev in the history, or be completely detached with no common element.
+If a document is edited on multiple servers, it's possible for edit conflicts to occur. When an edit conflict happens, there will be a "branch" in the rev history. The branches can have a common rev in the history, or be completely detached with no common element.
 
 When there is a edit conflict, each server selects an interim "winner", which is decided by:
 
@@ -68,14 +68,20 @@ Here is an example of a single rev history tree consisting of 3 branches and the
 
 The rev 5-0-deadbeef-2, in **bold**, is the interim winner.
 
-If the last edit in a branch is a "deletion", which means the leaf for that branch specifies a deleted document, that branch is no longer considered to be conflict. To resolve a conflict, an agent or user would add revs to the leafs in the losing branches into the deleted state. The winner can be updated with data from the losing revs as well, if applicable. Once there is no more than one live or non-deleted branch, the conflict is considered to be resolved and is no longer in conflict.
+##Resolving Conflicts
+
+A conflict is when there are multiple branches where the leaf node is NOT a deletion.
+
+If one node edits a document while another node deletes it, there will be a new branch in the revision once replication occurs. However, the document is not considered to be in conflict, and the live branch is considered to be the winner. This is because when the last edit in a branch is a deletion, which means the leaf for that branch specifies a deleted document, that conflict is considered resolved.
+
+To resolve a conflict, an external agent or end user would add a new "delete" revision to the leaf in the losing branches. The winner can be updated with data from the loser as well, if applicable, adding again another revision. Once there is only one or zero non-deleted branches, the conflict is considered to be resolved and is no longer in conflict.
 
 
 ## Compact Representation of a Rev Tree.
 
 Here is a proposed binary level format for storing a whole Rev Tree in a packed representation with size for all members.
 
-_It's possible in most circumstances to be much more space efficient by using use variable sized integers in many places, or even to specify the whole tree on-disk structure using something like protocol buffers, which has variable sized int as a built in feature_.
+_It's possible in most circumstances to be more space efficient by using variable sized integers for incremented values, or even to specify the whole tree on-disk structure using something like Protocol Buffers, which has variable sized int and long as a built in feature_.
 
 ###PackedRevTree###
 
@@ -132,11 +138,11 @@ If the IsDeletion bit is set and the IsOffset is not, then it's possible the old
 	<tr>
 		<th>Bit Range
 		<td>0-47
-		<td>48-63
-		<td>64
-		<td>65
-		<td>66-93
-		<td>94+
+		<td>79
+		<td>80
+		<td>81
+		<td>123
+		<td>124+
 </table>
 
 ###PackedRev###
@@ -152,7 +158,7 @@ Format of PackedRev:
 		<th>Total
 	<tr>
 		<th>Bytes
-		<td>2
+		<td>4
 		<td>3
 		<td>4
 		<th>9
@@ -168,21 +174,21 @@ This example details a single document edited and replicated on 3 different clus
 (Note we don't use the full failover ids, in this example, but shortened hex ids that are pronounceable instead)
 
 ### Initial Edit And Replication
-The document is created node deadbeaf (1-0-deadbeef-0) and replicates to cafebabe.
+The document is created on node deadbeaf (1-0-deadbeef-0) and replicates to cafebabe.
 
 ![](revtreesimages/a.png)
 
 ### Second Node Edits and replicates
 
-cafebabe edits the document and creates revision 2-0-cafebabe-0, then replicates to ba5eba11.
+the document is edited on cafebabe and creating revision 2-0-cafebabe-0, then replicates to ba5eba11.
 
 ![](revtreesimages/b.png)
 
 ### Edit Conflicts
 
-ba5eba11 edits once (3-0-ba5eba11-0).
+Edit on ba5eba11 creates rev 3-0-ba5eba11-0.
 
-cafebabe edits again (2-1-cafebabe-0).
+Edit on cafebabe creates rev 2-1-cafebabe-0.
 
 ![](revtreesimages/c.png)
 
@@ -193,9 +199,9 @@ Bi-dir replication between cafebabe and ba5eba11 creates new branch/conflicts (2
 
 ### More Conflicting Edits
 
-Revision 2-1-cafebabe-0 edited at ba5eba11 which becomes 4-0-ba5eba11-1.
+Revision 2-1-cafebabe-0 edited at ba5eba11 becomes 4-0-ba5eba11-1.
 
-Revision 2-1-cafebabe-0 edited at cafebabe which becomes 2-2-cafebabe-0.
+Revision 2-1-cafebabe-0 edited at cafebabe becomes 2-2-cafebabe-0.
 
 ![](revtreesimages/e.png)
 
@@ -223,7 +229,7 @@ deaadbeef replicates new edits to cafebabe and ba5eba11. All nodes now have all 
 
 ###Detail of full rev tree now on all nodes
 
-All nodes will the have the same revision tree with the same histories.
+All nodes will the have this same revision tree.
 
 ![](revtreesimages/i.png)
 
