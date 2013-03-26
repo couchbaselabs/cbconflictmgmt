@@ -22,6 +22,23 @@ This document will describe the high level algorithms and data structures necess
 
 ## Basics of Rev Trees
 
+### What they do
+
+The purpose of Rev Tree's is to establish a relationship between the most recent edits of a document that exists on different machines. The relationship that edits can have are:
+
+1. Both are at same edit.
+2. One edit is based on another edit.
+3. The edits are in conflict.
+
+When 1 or 2 are established, it means the edits are "correct" and correct state of the document is not in question.
+
+When 3 happens, it means the document was edited on multiple nodes before a successful XDCR replication occurred, and now the edits are not correctly ordered and it's possible the edits have 2 unique and valid states, it is in conflict.
+
+When this happens Couchbase will store both edits, pick an interim winner (the same winner will be selected on all nodes) and "hide" the losing conflict(s) and mark the document as being in conflict so that it can found, using views and other searches, by an external agents who can potentially resolve the conflicts.
+
+
+### How they do it
+
 Each time a document is created, edited or deleted, a revision entry (rev) is added to the document's rev history, or an existing "leaf" entry is updated. Each revision entry is made up of these fields with these sizes:
 
 <table>
@@ -68,14 +85,63 @@ Here is an example of a single rev history tree consisting of 3 branches and the
 
 The rev 5-0-deadbeef-2, in **bold**, is the interim winner.
 
-##Resolving Conflicts
+### Stemming old revs
 
-A conflict is when there are multiple branches where the leaf node is NOT a deletion.
+Once all nodes have seen a revision in the history, and that revision is not the leaf, it can safely be removed from the history without causing any problems.
 
-If one node edits a document while another node deletes it, there will be a new branch in the revision once replication occurs. However, the document is not considered to be in conflict, and the live branch is considered to be the winner. This is because when the last edit in a branch is a deletion, which means the leaf for that branch specifies a deleted document, that conflict is considered resolved.
+If an entry is removed from the history before it's been replicated to all nodes, it's possible that non-conflicting edits will still cause a spurious edit conflict, and the overlapping portions of the rev history no longer exists and it becomes impossible to establish that one edit is based on an early edit, creating branch in the rev tree. However, no data is lost.
 
-To resolve a conflict, an external agent or end user would add a new "delete" revision to the leaf in the losing branches. The winner can be updated with data from the loser as well, if applicable, adding again another revision. Once there is only one or zero non-deleted branches, the conflict is considered to be resolved and is no longer in conflict.
+### Comparison to CouchDB Rev Trees
 
+This design based heavily on the existing CouchDB rev tree design.
+
+The main enhancement is that consecutive edits to a document on the same server do not grow the revision tree beyond 1 new rev entry, it just reuses/amends the last revision. Unlike CouchDB were any edits add a new revision, growing the tree unbounded.
+
+However for ping-ponging edits, where a document is edited at Node A and replicated to Node B and edited at Node B and replicated back to Node A, 2 entries will be added to the revision history for each round trip edit cycle. This will grow unbounded with # of edits.
+
+For this feature to work correctly, each unique node will have to have a unique identifier. If it does not, like a machine that has been cloned from another machine so that both have the same identifier, it can lose edits and get out of sync between nodes. So long as each machine always has a unique identifier this can never be a problem. If a machine is unsure whether the identifier it currently uses is actually unique, it can just generate a new Id without any incorrect behavior.
+
+### Comparison to Vector Clocks
+
+This design has a number of advantages and disadvantages with Vector Clocks.
+
+With a vector clocks and distributed edits, it's possible to edit a document repeatedly at any node in any order, and the revision history will never grow beyond N clock entries with N different nodes.
+
+With revision trees, the worst case is each nonconsecutive edits at a node will grow the revision tree by one for each non-consecutive edit. In the worst case they can grow unbounded.
+
+However, it's easier remove "old" entries from the revision tree. Once confident a particular historical revision entry (just the entry, not the actual edit) has been seen by all nodes, that rev and all earlier revs can be stemmed from the history, shrinking it.
+
+With Vector Clocks, removing old vector clock entries isn't possible without some sort of centralized coordination so all nodes remove the entries at the same time (otherwise spurious conflicts can occur), making such removal tricky and complicated in basic scenarios, to nearly impossible for federated cases. This can be a problem if there are a high number of nodes that have ever been in the system, due to many nodes being added/removed, or in a mobile use case where the number of unique active nodes can be huge.
+
+### Deleting Documents
+
+A deletion means a user deleted a version of the document, to remove a document from the database, so that normal GET operations report the document as non-existent and the document is removed from ay views.
+
+However, deleting a document doesn't remove the meta-data or the rev history. It simply adds a new revision to the rev history, with a bit on it that indicates that branch ends in a deletion. Only if all branches in a document are deletions, then document is considered deleted. If a user or agent deletes a branch but there are still one or more live branches, the winning live version of a document is returned on normal GET requests.
+
+### Purging Deletions
+
+When deletes have been replicated to remote hosts and have been removed from any indexes, they are subject to being purged. That means to completely remove the deleted branch rev history from the database completely. If all the rev histories have been purged, then all metadata for the document is dropped and any record of the document having been in the database is gone.
+
+Failure to ensure the delete revision has been replicated to all remote hosts and applied to all indexes means the remote hosts and indexes will not know to perform the same deletion and may forever be out of sync with the storage. How to do this safely will be discussed in a purge specification document.
+
+### Resolving Conflicts
+
+A conflict is when there are multiple branches where the leaf node is NOT a deletion. 
+
+If one node edits a document while another node deletes it, there will be a new branch in the revision once replication occurs, and the live edit will always win over the deletion edit. However, the document is not considered to be in conflict. This is because when the last edit in a branch is a deletion, the conflict is considered resolved.
+
+To resolve a conflict between live conflicting edits, an external agent or end user would add a new "delete" revision to the leaf in the losing branches. The winner can be updated with data from the loser as well, if applicable, adding again another revision.
+
+Once there is only one or zero non-deleted branches, the conflict is considered to be resolved and no longer in conflict.
+
+This has the desirable behaviors of live edits always winning and conflicting deletes not putting a document into a conflicted state, and it simplifies replication and client software so that resolving conflicts are the same actions as normal edits, no new logic or features are necessary for resolution.
+
+### Field Level Replication
+
+An optimization with small space overhead can be employed to track which edit a field or body was edits. By recording the new edit #  (StartSeq + ConsecEdits) with a field when modified, it's then possible to only send changed fields that the remote replica doesn't have.
+
+For example, if a remote version of a document is a edit number 100, and the local, non-conflicting version is a edit 101, then only fields or bodies with a edit # higher than 100 need to be sent to the remote replica (along with a list of all still active fields/bodies). The remote replica then applies the edited fields to it's copy of the document, and deletes any fields that aren't in the field list. This can greatly reduce the amount of data necessary to send, allowing only the data that changes to be sent.
 
 ## Compact Representation of a Rev Tree.
 
