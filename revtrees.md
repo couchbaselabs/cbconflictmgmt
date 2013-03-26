@@ -64,7 +64,7 @@ Each time a document is created, edited or deleted, a revision entry (rev) is ad
 
 **EditId**: A value that when combined with the OriginId and SeqStart, is unique to all branches/conflicts.
 
-When updating a document and the most recent Rev has a different OriginID from the current partition master node's FailoverID, a new Rev is added to the revision history, with a SeqStart that is the sum of the previous Rev SeqStart and ConsecEdits, an ConseqEdits of 0, a OriginId that is the current FailoverId, and an EditId that is unique different from any matching OriginId for this document or it's conflicts. If the edit is a consecutive edits by the same node/FailoverId, only the ConsecEdits is increments.
+When updating a document and the most recent Rev has a different OriginID from the current partition master node, a new Rev is added to the revision history, with a SeqStart that is the sum of the previous Rev SeqStart and ConsecEdits, a ConseqEdits of 0, the current OriginId, and an EditId that is unique different from any matching OriginId for this document or it's conflicts. If the edit is a consecutive edits by the same node, only the ConsecEdits is increments.
 
 If a document is only ever edited at the same master node, the revision history will not grow, and instead the ConsecEdits will keep incrementing. If the ConsecEdits reaches it's maximum value (2^32), a new rev entry will created and added to the history. Logically the 2 or more consecutive revs with the same OriginId will be considered a single rev entry.
 
